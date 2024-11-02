@@ -75,27 +75,39 @@ class ExtratorPDF:
             self.caminho_excel.set(arquivo)
 
     def processar_texto(self, texto):
+        # Log do texto original para debug
+        self.log("\nTexto original completo:")
+        self.log("=" * 50)
+        self.log(texto)
+        self.log("=" * 50)
+        
         # Remove caracteres de formatação mantendo quebras de linha
         texto = texto.replace('\f', '')
         
-        # Processa linha por linha
+        # Divide em linhas e processa cada uma
         linhas_processadas = []
-        for linha in texto.split('\n'):
-            # Remove espaços extras no início e fim
-            linha = linha.strip()
-            # Remove múltiplos espaços entre palavras
-            linha = re.sub(r'\s+', ' ', linha)
-            if linha:  # Só adiciona linhas não vazias
-                linhas_processadas.append(linha)
+        linhas_originais = texto.split('\n')
         
+        self.log(f"\nTotal de linhas originais: {len(linhas_originais)}")
+        
+        for i, linha in enumerate(linhas_originais):
+            linha = linha.strip()
+            if linha and not linha.startswith('SALDO') and 'SALDO DISPONIVEL' not in linha:
+                linhas_processadas.append(linha)
+                
+        self.log(f"Total de linhas após processamento inicial: {len(linhas_processadas)}")
         return '\n'.join(linhas_processadas)
 
-    def extrair_informacao(self, linha):
-        # Log da linha antes da extração
+    def extrair_informacao(self, linha): 
         self.log(f"\nTentando extrair da linha: '{linha}'")
         
-        # Padrão original que funcionava melhor
-        pattern = r'(\d{2}/\d{2}/\d{4})\s+(.*?)\s+(\d{12})\s+([0-9,.]+)\s+([DC])'
+        # Ignora linhas de cabeçalho e saldo
+        if any(palavra in linha.upper() for palavra in ['SALDO', 'DATA DESCRIÇÃO', 'INICIAL']):
+            self.log("Linha ignorada - cabeçalho ou saldo")
+            return None
+        
+        # Padrão de extração ajustado para cobrir descrições mais variadas
+        pattern = r'(\d{2}/\d{2}/\d{4})\s+([A-Za-zÀ-Ú0-9\s\*\-\,\.]+?)\s+(\d{12})\s+([\d,.]+)\s*([CD])'
         
         try:
             match = re.search(pattern, linha)
@@ -103,35 +115,31 @@ class ExtratorPDF:
                 data = match.group(1)
                 descricao = match.group(2).strip()
                 codtrans = match.group(3)
-                valor = match.group(4)
+                valor = match.group(4).replace(',', '.')
                 caractere = match.group(5)
                 
-                # Log de sucesso
                 self.log("Extração bem-sucedida!")
                 self.log(f"Dados extraídos: {data} | {descricao} | {codtrans} | {valor} | {caractere}")
                 
                 return (data, descricao, codtrans, valor, caractere)
             else:
-                # Log de falha
                 self.log("Falha na extração - Linha não corresponde ao padrão")
                 return None
-                
+            
         except Exception as e:
-            self.log(f"Erro ao extrair linha: {linha}")
-            self.log(f"Erro: {str(e)}")
+            self.log(f"Erro ao extrair linha: {str(e)}")
             return None
 
     def processar(self):
         try:
-            # Verificar se os arquivos foram selecionados
-            if not self.caminho_pdf.get() or not self.caminho_excel.get():
-                messagebox.showerror("Erro", "Selecione os arquivos PDF e Excel primeiro!")
-                return
+            # Verificações iniciais permanecem iguais...
 
             self.log("Iniciando processamento...")
             self.progresso['value'] = 0
 
-            linhas_nao_extraidas = []  # Lista para armazenar linhas não extraídas
+            # Lista para armazenar todas as linhas e seu status
+            todas_linhas = []
+            linhas_nao_extraidas = []
 
             # Processar PDF
             with open(self.caminho_pdf.get(), 'rb') as arquivo_pdf:
@@ -144,38 +152,64 @@ class ExtratorPDF:
 
                 informacoes = []
                 total_paginas = len(leitor_pdf.pages)
+                texto_completo = ""
 
+                # Extrair texto de cada página
                 for i, pagina in enumerate(leitor_pdf.pages):
-                    self.log(f"\nProcessando página {i+1} de {total_paginas}...")
-                    texto = pagina.extract_text()
+                    self.log(f"\nLendo página {i+1} de {total_paginas}...")
+                    texto_pagina = pagina.extract_text()
                     
-                    # Pré-processa o texto mantendo as quebras de linha
-                    texto = self.processar_texto(texto)
+                    # Log do texto da página para debug
+                    self.log(f"\nConteúdo da página {i+1}:")
+                    self.log("-" * 30)
+                    self.log(texto_pagina)
+                    self.log("-" * 30)
                     
-                    # Log do texto processado para debug
-                    self.log("\nTexto extraído da página:")
-                    self.log(texto)
+                    texto_completo += texto_pagina
+                    self.progresso['value'] = ((i + 1) / total_paginas) * 50
+
+                # Processar o texto completo
+                texto_processado = self.processar_texto(texto_completo)
+                self.log("\nProcessando texto extraído...")
+
+                # Processar linha por linha
+                linhas = texto_processado.split('\n')
+                total_linhas = len(linhas)
+                
+                self.log(f"\nTotal de linhas para processar: {total_linhas}")
+                
+                for i, linha in enumerate(linhas):
+                    if linha.strip():  # Ignora linhas vazias
+                        informacao = self.extrair_informacao(linha)
+                        if informacao:
+                            informacoes.append(informacao)
+                            todas_linhas.append(("EXTRAÍDA", linha))
+                        else:
+                            linhas_nao_extraidas.append(linha)
+                            todas_linhas.append(("NÃO EXTRAÍDA", linha))
                     
-                    # Processa cada linha separadamente
-                    for linha in texto.split('\n'):
-                        if linha.strip():  # Ignora linhas vazias
-                            informacao = self.extrair_informacao(linha)
-                            if informacao:
-                                informacoes.append(informacao)
-                            else:
-                                linhas_nao_extraidas.append(linha)
-                    
-                    # Atualizar barra de progresso
-                    self.progresso['value'] = ((i + 1) / total_paginas) * 100
+                    self.progresso['value'] = 50 + ((i + 1) / total_linhas) * 50
                     self.janela.update()
 
-            # Salvar linhas não extraídas em arquivo
-            if linhas_nao_extraidas:
-                arquivo_log = os.path.splitext(self.caminho_pdf.get())[0] + "_linhas_nao_extraidas.txt"
-                self.log(f"\nSalvando linhas não extraídas em: {arquivo_log}")
-                with open(arquivo_log, 'w', encoding='utf-8') as f:
-                    for linha in linhas_nao_extraidas:
-                        f.write(f"{linha}\n")
+            # Salvar relatório detalhado
+            arquivo_log = os.path.splitext(self.caminho_pdf.get())[0] + "_relatorio_extracao.txt"
+            self.log(f"\nSalvando relatório detalhado em: {arquivo_log}")
+            with open(arquivo_log, 'w', encoding='utf-8') as f:
+                f.write("RELATÓRIO DE EXTRAÇÃO\n")
+                f.write("=" * 80 + "\n\n")
+                f.write(f"Total de linhas processadas: {len(todas_linhas)}\n")
+                f.write(f"Linhas extraídas com sucesso: {len(informacoes)}\n")
+                f.write(f"Linhas não extraídas: {len(linhas_nao_extraidas)}\n\n")
+                
+                f.write("DETALHAMENTO DAS LINHAS\n")
+                f.write("=" * 80 + "\n\n")
+                for status, linha in todas_linhas:
+                    f.write(f"{status}: {linha}\n")
+                
+                f.write("\n\nLINHAS NÃO EXTRAÍDAS\n")
+                f.write("=" * 80 + "\n\n")
+                for linha in linhas_nao_extraidas:
+                    f.write(f"{linha}\n")
 
             # Criar/atualizar Excel
             self.log("\nSalvando dados no Excel...")
